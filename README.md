@@ -1,103 +1,86 @@
 # Cam Link Indicator
 
-A small macOS menu-bar reminder that your HDMI camera is still sending video through an **Elgato Cam Link 4K revision 3**. Useful if you finish a call and forget to switch the camera off.
+**See when your camera is on.**
 
-| Indicator | Meaning |
-| --- | --- |
-| Large, gently pulsing red dot | HDMI signal present |
-| Gray dot | No HDMI signal |
-| Amber question mark | Status unavailable or a query failed |
+Cam Link Indicator puts a visible red dot in your Mac's menu bar while your camera is sending video—even outside a video call. It helps you notice when your camera is active, for privacy and to avoid leaving it running and heating up.
 
-The app checks every **5 seconds**, and when the Mac wakes. Click the dot for signal details, the last-check time, a manual refresh, and Quit. Uncheck **Pulse when camera is on** for a steady red dot; your preference is saved. The pulse is a two-second brightness cycle, and the red dot always stays visible.
+It is for people who use a camera as a webcam with this setup:
 
-**This detects HDMI signal, not the camera's power switch.** A powered camera that is sleeping, has stopped HDMI output, or has a disconnected cable can produce no signal.
+**Camera → HDMI cable → Elgato Cam Link → USB → Mac**
 
-## Compatibility
+The camera's brand is not hard-coded. The capture adapter matters: the app currently works with specific Cam Link 4K versions, described below.
 
-- **Cam Link 4K revision 3, USB ID `0fd9:00a1` only.** The app deliberately matches this ID. Check the vendor/product IDs in macOS System Information → USB.
-- Tested on Apple Silicon with macOS 26, a Sony A7 III over HDMI, and Google Meet. OBS has not been separately tested.
-- The protocol is about the Cam Link's HDMI input, with no Sony-specific commands. Other HDMI cameras may work with the same capture-device revision, but have not been tested.
-- First-generation Cam Link 4K, MK.2, USB 2.0 mode, and other capture devices are **not supported** by this implementation. More than one matching device produces an unknown status.
-- The build targets macOS 13 or later and the current Mac's architecture. Older macOS versions and Intel Macs have not been verified.
+## What you'll see
 
-Elgato has sold different hardware under the same Cam Link 4K name. Changing a USB ID in the source does not establish compatibility with another revision.
+- 🔴 **Red:** the camera is sending an HDMI video signal. The dot gently pulses to catch your attention.
+- ⚪ **Gray:** no HDMI signal detected.
+- 🟠 **Amber ?:** the app couldn't determine the status.
 
-## Build and install
+The indicator checks every **5 seconds**. Click it to see the signal details, refresh immediately, turn pulsing off, or quit. It reads the adapter's status without opening a video stream; Google Meet has been tested alongside it. OBS has not yet been separately tested.
 
-Requires Apple's Command Line Tools (`xcode-select --install` if needed). No Homebrew packages, SwiftBar, Python, Xcode project, or running Camera Hub are required.
+The indicator watches the camera's HDMI signal. It does not tell you whether an app is viewing or recording the video, and it does not measure temperature. A gray dot is not proof that the power switch is off: a sleeping camera or disconnected HDMI cable also produces no signal.
+
+## Try it
+
+You need macOS 13 or later and Apple's Command Line Tools. If those tools aren't installed, run `xcode-select --install` and finish the installation first. Hardware testing so far has been on Apple Silicon with macOS 26.
 
 ```sh
 git clone https://github.com/pabloarosado/camlink-indicator.git
 cd camlink-indicator
-./install.sh
+./check-device.sh
 ```
 
-To also start automatically at login:
+**The check tells you which Elgato adapter is connected and whether this app supports it.** You don't need to know its hardware revision or decode a USB ID. It builds a local executable and reads USB model information; it does not install the app or start video capture.
+
+If your model is supported—or you want to try the experimental first-generation support—install with:
 
 ```sh
 ./install.sh --login
 ```
 
-Quit an existing copy from its menu before installing an update. The installer builds and validates the app, copies it to `~/Applications/Cam Link Indicator.app`, and opens it. No `sudo` is needed. The app is locally ad-hoc signed; it is not notarized for distribution. No prebuilt binary is included.
+This builds the app, puts it in `~/Applications`, opens it, and enables startup at login. Leave off `--login` if you prefer to open it yourself. Quit an existing copy from its menu before installing an update.
 
-To build without installing:
+No `sudo`, Homebrew packages, or running Camera Hub are needed. The app is built and signed locally; there is no notarized download yet.
 
-```sh
-./build.sh
-open 'build/Cam Link Indicator.app'
-```
+## Will it work with my setup?
 
-To change login startup after installation:
+| Capture adapter | Current status |
+| --- | --- |
+| Cam Link 4K, revision 3 | **Tested** with a Sony A7 III and Google Meet on an Apple Silicon Mac |
+| First-generation Cam Link 4K | **Experimental**, including its USB 2.0 identity. Implemented from published protocol information; not yet tested with this app on physical hardware |
+| Cam Link 4K MK.2, original non-4K Cam Link, other brands | Not supported yet |
 
-```sh
-./login-item.sh enable
-./login-item.sh disable
-```
+Revision 3 must connect in USB 3 mode. The app currently handles one supported adapter at a time. Other HDMI cameras using a supported adapter are expected to work, but only the Sony setup above has been verified. Intel Macs and older supported macOS versions also need testing.
 
-The login helper generates a per-user LaunchAgent using the current home directory. It opens the app once at login; it does not continually relaunch it after Quit.
+Elgato has used the name “Cam Link 4K” for several different internal designs. That's why the compatibility check identifies the version automatically. [Exact USB IDs and protocol details](docs/PROTOCOL.md) are available for contributors.
 
-## How it works
+If you try a new setup, check that the dot follows the camera's on/off state while the Cam Link remains plugged in, then check that video still works in your usual app. Please report the compatibility-check output, macOS version, camera model, and whether those checks passed. The compatibility output excludes device serial numbers.
 
-The Cam Link exposes a vendor HID control interface separately from its UVC video interface. The app opens the HID device in shared mode, requests the input status block, reads the signal flag, and closes the interface. It does not capture video or audio, seize the video interface, change camera settings, reset USB, or update firmware.
+## Privacy and how it works
 
-Requests run off the main thread and do not overlap. An error or unexpected reply becomes an unknown status. The pulse uses Core Animation and makes no extra USB requests.
+The app queries the Cam Link's separate control interface. It does not record video or audio, make network connections, or change camera settings. It saves only your pulse preference.
 
-The protocol was traced from the signal-status functions in Camera Hub 2.3.0 and checked with a physical camera switched on and off. This is an independent implementation of an undocumented protocol; it is not affiliated with Elgato, and future firmware changes may need an update. See [protocol notes](docs/PROTOCOL.md) for the exact request, reply layout, and validation evidence.
+This is an independent tool using an undocumented device protocol, not an Elgato product. The tested implementation and experimental implementation are described in the [protocol notes](docs/PROTOCOL.md).
 
-## Diagnostics and checks
+## Settings and removal
 
-Read the current status without starting another menu-bar instance:
+Click the dot and uncheck **Pulse when camera is on** for a steady red light. Your choice is remembered.
 
 ```sh
-"$HOME/Applications/Cam Link Indicator.app/Contents/MacOS/CamLinkIndicator" --status
+./login-item.sh enable   # Start at login
+./login-item.sh disable  # Stop starting at login
 ```
 
-This prints JSON with `state` (`signal`, `no-signal`, or `unknown`) and `detail`. Exit status is 0 for a valid reading and 2 for unknown. It accesses the physical device.
+To uninstall, quit the app, disable login startup, and move `~/Applications/Cam Link Indicator.app` to Trash.
 
-The build script runs hardware-independent parser checks. They can also be run directly:
+## Development
+
+`./build.sh` builds the app and runs hardware-independent parser and model-routing checks. Build output is ignored by Git. For a one-off JSON status reading, use:
 
 ```sh
-'build/Cam Link Indicator.app/Contents/MacOS/CamLinkIndicator' --self-test
+'build/Cam Link Indicator.app/Contents/MacOS/CamLinkIndicator' --status
 ```
 
-To validate a new setup, keep the Cam Link connected, switch the camera on and off, and check that the indicator follows. Also check normal video operation in your usual call/recording app. No-signal results alone cannot prove that the camera is switched off.
+The states are `signal`, `no-signal`, and `unknown`; exit status is 2 for unknown and 0 for a valid reading. `--check` lists connected Elgato models without opening a control interface; `--self-test` runs the checks without accessing hardware.
 
-## Privacy
-
-No network connections, telemetry, image/audio capture, credentials, or device serial numbers. Device matching uses the model's USB IDs, which are shared by every unit of that model. The only saved app preference is whether to pulse. Personal installation paths are generated locally and are not part of the repository. Build output is ignored by Git.
-
-## Remove
-
-1. Quit from the dot's menu.
-2. Run `./login-item.sh disable` if you enabled login startup.
-3. Move `~/Applications/Cam Link Indicator.app` to Trash.
-
-Optionally remove the saved pulse preference:
-
-```sh
-defaults delete local.camlink.signal-indicator
-```
-
-## License
-
-[MIT](LICENSE). No Elgato binaries, firmware, or source code are distributed here.
+[MIT license](LICENSE). No Elgato software or firmware is included.

@@ -1,9 +1,18 @@
 #import <AppKit/AppKit.h>
 #import <IOKit/hid/IOHIDManager.h>
+#import <IOKit/IOKitLib.h>
 #import <QuartzCore/QuartzCore.h>
 
-// Cam Link 4K revision 3 (0fd9:00a1). Protocol traced from Camera Hub 2.3.0.
-// Only a read request for the input status block is sent. No video APIs are used.
+// Revision 3: protocol traced from Camera Hub 2.3.0 and tested on hardware.
+// First generation: experimental port of the published GET_REPORT 0x13 protocol.
+// No video APIs are used. See docs/PROTOCOL.md for sources and test coverage.
+typedef NS_ENUM(NSInteger, StatusProtocol) { Unsupported, Revision3, FirstGeneration };
+static StatusProtocol protocolForModel(unsigned vendor, unsigned product) {
+    if(vendor != 0x0fd9) return Unsupported;
+    if(product == 0x00a1) return Revision3;
+    if(product == 0x0066 || product == 0x0067) return FirstGeneration;
+    return Unsupported;
+}
 static NSDictionary *result(NSString *state, NSString *detail) {
     return @{ @"state":state, @"detail":detail };
 }
@@ -23,24 +32,72 @@ static NSDictionary *decode(const uint8_t *bytes, CFIndex length) {
     if(status[6] & 2) fps/=1.001;
     return result(@"signal", [NSString stringWithFormat:@"HDMI signal: %u × %u at %.2f fps",width,height,fps]);
 }
+static NSDictionary *decodeFirstGeneration(const uint8_t *bytes, CFIndex length) {
+    // Unlike revision 3, these six bytes have no status or report-ID prefix.
+    if(length != 6 || bytes[5] > 1)
+        return result(@"unknown", @"Unexpected first-generation status response");
+    if(!bytes[5]) return result(@"no-signal", @"No HDMI signal detected");
+    unsigned width=bytes[0] | (bytes[1]<<8), height=bytes[2] | (bytes[3]<<8);
+    if(!width || !height || !bytes[4]) return result(@"unknown", @"Incomplete HDMI status");
+    return result(@"signal", [NSString stringWithFormat:@"HDMI signal: %u × %u at %u fps",width,height,bytes[4]]);
+}
+
+// USB enumeration only: no device open, control requests, video, or serial numbers.
+static int checkCompatibility(void) {
+    io_iterator_t iterator=0;
+    kern_return_t code=IOServiceGetMatchingServices(kIOMainPortDefault,IOServiceMatching("IOUSBHostDevice"),&iterator);
+    if(code) { fprintf(stderr,"Cannot inspect USB devices (0x%08x).\n",code); return 2; }
+    unsigned found=0;
+    io_service_t device;
+    while((device=IOIteratorNext(iterator))) {
+        NSNumber *vendor=CFBridgingRelease(IORegistryEntryCreateCFProperty(device,CFSTR("idVendor"),NULL,0));
+        NSNumber *product=CFBridgingRelease(IORegistryEntryCreateCFProperty(device,CFSTR("idProduct"),NULL,0));
+        if(vendor.unsignedIntValue==0x0fd9) {
+            unsigned pid=product.unsignedIntValue;
+            NSString *description;
+            switch(protocolForModel(vendor.unsignedIntValue,pid)) {
+                case Revision3: description=@"Cam Link 4K revision 3 — supported; hardware-tested on one setup."; break;
+                case FirstGeneration: description=@"First-generation Cam Link 4K — experimental; needs macOS hardware testing."; break;
+                default:
+                    if(pid==0x7b || pid==0x85) description=@"Cam Link 4K MK.2 — not supported yet.";
+                    else if(pid==0xa2) description=@"Cam Link 4K revision 3 in USB 2.0 mode — not supported; try a USB 3 port/cable.";
+                    else description=@"Elgato device — this model is not supported.";
+            }
+            printf("%s\nUSB model ID: 0fd9:%04x\n\n",description.UTF8String,pid);
+            found++;
+        }
+        IOObjectRelease(device);
+    }
+    IOObjectRelease(iterator);
+    if(!found) puts("No Elgato USB device found. Connect your Cam Link and try again. Other capture-card brands are not supported.");
+    return 0;
+}
 static NSDictionary *query(void) {
     IOHIDManagerRef manager=IOHIDManagerCreate(kCFAllocatorDefault,kIOHIDOptionsTypeNone);
     if(!manager) return result(@"unknown", @"Cannot create HID manager");
-    NSDictionary *matching=@{@kIOHIDVendorIDKey:@0x0fd9, @kIOHIDProductIDKey:@0x00a1,
-                             @kIOHIDPrimaryUsagePageKey:@0xffa0, @kIOHIDPrimaryUsageKey:@1};
-    IOHIDManagerSetDeviceMatching(manager,(__bridge CFDictionaryRef)matching);
+    NSArray *matching=@[
+        @{@kIOHIDVendorIDKey:@0x0fd9, @kIOHIDProductIDKey:@0x00a1,
+          @kIOHIDPrimaryUsagePageKey:@0xffa0, @kIOHIDPrimaryUsageKey:@1},
+        @{@kIOHIDVendorIDKey:@0x0fd9, @kIOHIDProductIDKey:@0x0066, @kIOHIDPrimaryUsagePageKey:@0xff00},
+        @{@kIOHIDVendorIDKey:@0x0fd9, @kIOHIDProductIDKey:@0x0067, @kIOHIDPrimaryUsagePageKey:@0xff00}
+    ];
+    IOHIDManagerSetDeviceMatchingMultiple(manager,(__bridge CFArrayRef)matching);
     CFSetRef devices=IOHIDManagerCopyDevices(manager);
     NSDictionary *answer;
     CFIndex count=devices ? CFSetGetCount(devices):0;
     if(count != 1) {
-        answer=result(@"unknown", count ? @"Multiple Cam Links connected" : @"Revision 3 Cam Link unavailable");
+        answer=result(@"unknown", count ? @"Connect one supported Cam Link at a time" : @"No supported Cam Link detected; run check-device.sh for details");
     } else {
         IOHIDDeviceRef device;
         CFSetGetValues(devices,(const void **)&device);
+        NSNumber *vendor=(__bridge NSNumber *)IOHIDDeviceGetProperty(device,CFSTR(kIOHIDVendorIDKey));
+        NSNumber *product=(__bridge NSNumber *)IOHIDDeviceGetProperty(device,CFSTR(kIOHIDProductIDKey));
+        StatusProtocol protocol=protocolForModel(vendor.unsignedIntValue,product.unsignedIntValue);
         // Shared access; never seize the device or its UVC video interface.
         IOReturn code=IOHIDDeviceOpen(device,kIOHIDOptionsTypeNone);
+        BOOL opened=(code==kIOReturnSuccess);
         if(code) answer=failure(@"HID access",code);
-        else {
+        else if(protocol==Revision3) {
             // Output report 6; payload 06 07 55 01 00 08 = read 8 bytes from
             // virtual I2C address 0x55, register 0. First 06 is the report ID.
             const uint8_t request[]={6,6,7,0x55,1,0,8};
@@ -52,8 +109,17 @@ static NSDictionary *query(void) {
                 code=IOHIDDeviceGetReport(device,kIOHIDReportTypeInput,5,response,&length);
                 answer=code ? failure(@"Status response",code) : decode(response,length);
             }
-            IOHIDDeviceClose(device,kIOHIDOptionsTypeNone);
+        } else if(protocol==FirstGeneration) {
+            // Read only; never send revision 3's Output report 6 to this model.
+            uint8_t response[6]={0x13}; CFIndex length=sizeof(response);
+            code=IOHIDDeviceGetReport(device,kIOHIDReportTypeInput,0x13,response,&length);
+            answer=code ? failure(@"First-generation status read",code) : decodeFirstGeneration(response,length);
+            answer=result(answer[@"state"], [@"Experimental: " stringByAppendingString:answer[@"detail"]]);
+        } else {
+            answer=result(@"unknown",@"Unsupported Cam Link model");
         }
+        // Close only if the open succeeded, regardless of subsequent read errors.
+        if(opened) IOHIDDeviceClose(device,kIOHIDOptionsTypeNone);
     }
     if(devices) CFRelease(devices);
     CFRelease(manager);
@@ -189,6 +255,7 @@ static NSDictionary *query(void) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if(argc==2 && strcmp(argv[1],"--check")==0) return checkCompatibility();
         if(argc==2 && strcmp(argv[1],"--status")==0) {
             NSDictionary *value=query();
             NSData *json=[NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingSortedKeys error:nil];
@@ -203,6 +270,21 @@ int main(int argc, const char *argv[]) {
             NSCAssert([decode(off,9)[@"state"] isEqual:@"no-signal"],@"Signal bit clear");
             NSCAssert([decode(error,9)[@"state"] isEqual:@"unknown"],@"Error is unknown");
             NSCAssert([decode(on,8)[@"state"] isEqual:@"unknown"],@"Short response is unknown");
+            uint8_t legacyOn[]={0x80,0x07,0x38,0x04,60,1};
+            uint8_t legacyOff[]={0x00,0x0f,0x70,0x08,30,0};
+            uint8_t invalidFlag[]={0x80,0x07,0x38,0x04,60,2};
+            uint8_t incomplete[]={0,0,0x38,0x04,60,1};
+            NSCAssert([decodeFirstGeneration(legacyOn,6)[@"state"] isEqual:@"signal"],@"Legacy on");
+            NSCAssert([decodeFirstGeneration(legacyOff,6)[@"state"] isEqual:@"no-signal"],@"Stored resolution is not a signal");
+            NSCAssert([decodeFirstGeneration(legacyOn,5)[@"state"] isEqual:@"unknown"],@"Legacy short reply");
+            NSCAssert([decodeFirstGeneration(invalidFlag,6)[@"state"] isEqual:@"unknown"],@"Legacy invalid flag");
+            NSCAssert([decodeFirstGeneration(incomplete,6)[@"state"] isEqual:@"unknown"],@"Legacy incomplete timing");
+            NSCAssert(protocolForModel(0x0fd9,0x00a1)==Revision3,@"Revision 3 route");
+            NSCAssert(protocolForModel(0x0fd9,0x0066)==FirstGeneration,@"First-generation route");
+            NSCAssert(protocolForModel(0x0fd9,0x0067)==FirstGeneration,@"First-generation USB 2 route");
+            NSCAssert(protocolForModel(0x0fd9,0x007b)==Unsupported,@"Do not guess MK.2 protocol");
+            NSCAssert(protocolForModel(0x0fd9,0x00a2)==Unsupported,@"Do not guess revision 3 USB 2 protocol");
+            NSCAssert(protocolForModel(0x1234,0x00a1)==Unsupported,@"Do not address other vendors");
             puts("Status parser checks passed"); return 0;
         }
         NSApplication *app=NSApplication.sharedApplication;
