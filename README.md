@@ -10,6 +10,8 @@ It is for people who use a camera as a webcam with this setup:
 
 The camera's brand is not hard-coded. The capture adapter matters: the app currently works with specific Cam Link 4K versions, described below.
 
+I made this for my own setup and share it in case it's useful. It is not a maintained product: I may fix trivial things, but I won't debug other setups or add support for more models. Feel free to fork it.
+
 ## What you'll see
 
 - 🔴 **Red:** the camera is sending an HDMI video signal. The dot gently pulses to catch your attention.
@@ -52,9 +54,9 @@ No `sudo`, Homebrew packages, or running Camera Hub are needed. The app is built
 
 Revision 3 must connect in USB 3 mode. The app currently handles one supported adapter at a time. Other HDMI cameras using a supported adapter are expected to work, but only the Sony setup above has been verified. Intel Macs and older supported macOS versions also need testing.
 
-Elgato has used the name “Cam Link 4K” for several different internal designs. That's why the compatibility check identifies the version automatically. [Exact USB IDs and protocol details](docs/PROTOCOL.md) are available for contributors.
+Elgato has used the name “Cam Link 4K” for several different internal designs. That's why the compatibility check identifies the version automatically. [Exact USB IDs and protocol details](docs/PROTOCOL.md) are documented for anyone who wants to extend a fork.
 
-If you try a new setup, check that the dot follows the camera's on/off state while the Cam Link remains plugged in, then check that video still works in your usual app. Please report the compatibility-check output, macOS version, camera model, and whether those checks passed. The compatibility output excludes device serial numbers.
+If you try a new setup, check that the dot follows the camera's on/off state while the Cam Link remains plugged in, then check that video still works in your usual app.
 
 ## Privacy and how it works
 

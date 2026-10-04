@@ -94,8 +94,8 @@ checks keep the two protocols separate and exclude unimplemented models.
 ## Adding another model
 
 `--check` reads USB model metadata without opening the device or sending control
-requests. It can identify unsupported models for a compatibility report. It does
-not read or print serial numbers.
+requests. It can identify unsupported models. It does not read or print serial
+numbers.
 
 Do not add a product ID without confirming its control interface and status
 protocol. Each additional implementation needs camera-on, camera-off, and
